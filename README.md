@@ -1,98 +1,66 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# OpenForms
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+OpenForms is an open-source, self-hostable form platform. Businesses build, publish and embed forms through a visual builder, then collect, inspect and export the responses. Developers can use the same backend for forms built in their own applications, submitting through a business-scoped API key and receiving signed webhooks.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Forms belong to the **business**, not to the person who created them — removing a colleague's membership never removes their business's forms or responses.
 
-## Description
+## Status
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+**Pre-implementation.** This repository currently contains a NestJS starter and generated resource stubs. No feature of the product below is implemented yet. [`target.md`](./target.md) is the authoritative PRD; the documents in [`docs/`](./docs) describe how it gets built.
 
-## Project setup
+## Stack
 
-```bash
-$ pnpm install
-```
+NestJS · Passport · PostgreSQL · TypeORM · Redis · BullMQ
 
-## Compile and run the project
+Backend first. The Next.js frontend described in PRD §29 is out of scope until the API is usable.
 
-```bash
-# development
-$ pnpm run start
+## Tenancy in one paragraph
 
-# watch mode
-$ pnpm run start:dev
+The interface says **business**. The backend says `tenantId`. Database columns say `tenant_id`. These are three names for one thing — there is exactly one business/tenant entity, mapped consistently to `businesses.id`. They do not represent two separate concepts, and nothing in the codebase should imply that they do.
 
-# production mode
-$ pnpm run start:prod
-```
+Users have global accounts and can belong to several businesses with a different role in each. Isolation is enforced in the application, not by PostgreSQL RLS (PRD §1, §12).
 
-## Run tests
+## Role matrix
 
-```bash
-# unit tests
-$ pnpm run test
+Permissions are business-wide. `created_by` is attribution only — it neither grants nor restricts access. Public respondents have no membership at all.
 
-# e2e tests
-$ pnpm run test:e2e
+| Action | OWNER | ADMIN | MEMBER | VIEWER |
+|---|:---:|:---:|:---:|:---:|
+| Read business metadata/dashboard | Yes | Yes | Yes | Yes |
+| Read forms and preview | Yes | Yes | Yes | Yes |
+| Read response contents | Yes | Yes | Yes | Yes |
+| Create/edit/duplicate forms | Yes | Yes | Yes | No |
+| Publish/unpublish/close/reopen | Yes | Yes | Yes | No |
+| Delete forms | Yes | Yes | No | No |
+| Export responses | Yes | Yes | Yes | No |
+| Delete responses | Yes | Yes | No | No |
+| Configure form notification recipients | Yes | Yes | No | No |
+| Create/revoke API keys | Yes | Yes | No | No |
+| Configure webhooks and inspect deliveries | Yes | Yes | No | No |
+| Read member directory: name/email/role | Yes | Yes | Yes | Yes |
+| Invite/manage MEMBER and VIEWER | Yes | Yes | No | No |
+| Invite/manage ADMIN | Yes | No | No | No |
+| Manage OWNER or transfer ownership | Yes | No | No | No |
+| Update business settings | Yes | Yes | No | No |
+| Read audit logs | Yes | Yes | No | No |
+| Delete business | Yes | No | No | No |
+| Leave business | After ownership transfer | Yes | Yes | Yes |
 
-# test coverage
-$ pnpm run test:cov
-```
+An ADMIN cannot modify or remove another ADMIN or the OWNER, including through self-demotion endpoints. OWNER is assignable only through ownership transfer — never through an invitation or an ordinary role update. No role bypasses tenant isolation (PRD §7).
 
-## Deployment
+## Documentation
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+| Document | What it covers |
+|---|---|
+| [`target.md`](./target.md) | The product requirements document. Authoritative; everything else derives from it. |
+| [`docs/architecture.md`](./docs/architecture.md) | Module layout, data model, and persistence conventions. |
+| [`docs/tenancy.md`](./docs/tenancy.md) | The tenant isolation contract. Read before writing any query. |
+| [`docs/roadmap.md`](./docs/roadmap.md) | Build order, phase exit gates, and decisions already settled. |
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Quick start
 
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+TODO — written once Phase 0 (bootstrap) lands. It will cover `docker compose up`, `.env` setup, running migrations and starting the API. See [`docs/roadmap.md`](./docs/roadmap.md).
 
 ## License
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+TODO — to be chosen before the first public release (PRD §33).

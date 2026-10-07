@@ -1,1908 +1,391 @@
-# OpenForms — Product Requirements Document
+# OpenForms — Personal Form Builder PRD
 
-**Version:** 1.0  
-**Status:** MVP  
-**Product Type:** Open-source form builder and form backend  
-**Primary Stack:** Next.js + NestJS + PostgreSQL  
-**Target:** GitHub portfolio + genuinely usable open-source product
+**Version:** 4.0  
+**Date:** 8 October 2026  
+**Status:** MVP implementation scope  
+**Stack:** Next.js, NestJS, Passport, PostgreSQL and TypeORM
 
----
+## 1. Product and goal
 
-# 1. Product Overview
+OpenForms lets individual users create forms, publish public links, collect anonymous submissions and review/export the
+results. Each form belongs to the user who created it.
 
-OpenForms is an open-source platform for creating, publishing, embedding, and managing online forms.
+The core journey is: register → verify email → create form → publish → share link → receive submission → review
+responses → export CSV.
 
-Users can visually create forms similar to Google Forms, publish them using a shareable URL, embed them into websites, and collect responses.
+This replaces the previous business-based scope. There are no businesses, tenants, memberships, teams, invitations, role
+hierarchies or business switching. User ownership checks still protect every private resource.
 
-Developers can also use OpenForms as a **form backend**. Instead of building APIs, databases, validation, email notifications, and response management for every contact or lead form, developers can send submissions directly to OpenForms.
+## 2. MVP scope
 
-Example:
+Included:
 
-```text
-Business Owner
-      │
-      ▼
- Visual Form Builder
-      │
-      ▼
- Published Form
-      │
-      ▼
-   Responses
-      │
-      ├── Dashboard
-      ├── CSV Export
-      ├── Email
-      └── Webhook
+- Email/password registration/login and Google login using Passport.
+- Email verification, forgot/reset password, refresh tokens and logout.
+- User profile retrieval and name update.
+- Five field types: text, textarea, email, multiple choice and checkbox group.
+- Form creation/editing/deletion, autosave and preview.
+- Publishing, republishing and unpublishing.
+- Public rendering and anonymous submissions with server validation.
+- Response list/detail/deletion and CSV export.
+- Basic abuse protection, tests, CI and deployment documentation.
 
+Deferred: collaboration, business accounts, API keys, authenticated developer APIs, webhooks, submission notifications,
+queues, Redis, file uploads, payments, AI generation, conditional logic, multi-page forms, custom domains, advanced
+analytics, form duplication, account linking, session-management UI and audit-log dashboard.
 
-Developer Website
-      │
-      │ API
-      ▼
- OpenForms
-      │
-      ├── Validation
-      ├── Storage
-      ├── Notifications
-      └── Webhooks
-```
+## 3. Users and authorization
 
----
+Two product actors exist:
 
-# 2. Problem
+| Actor                    | Capabilities                                                             |
+|--------------------------|--------------------------------------------------------------------------|
+| Authenticated form owner | Manage their own forms, view/delete their submissions and export results |
+| Anonymous respondent     | Read a published form and submit answers                                 |
 
-Creating a simple form often requires unnecessary engineering.
+No role enum or RBAC tables are required. `forms.user_id` identifies the owner. An authenticated person cannot access
+another user's private resources, regardless of known UUIDs or public slugs.
 
-A developer building a contact form may need to implement:
+Every private form query includes `user_id = authenticatedUser.id`. Updates/deletes include ownership in the mutation
+predicate, not only an earlier lookup. Nested response operations verify `(form_id, response_id)` and ownership of the
+parent form. Never accept userId/ownerId from form creation bodies.
 
-- API endpoint
-- validation
-- database storage
-- spam protection
-- email notifications
-- admin interface
-- CSV export
-- webhook integration
+Return 404 for another person's private resource. Public endpoints expose only rendering data and never permit response
+retrieval. Clear user-specific frontend caches on logout/account changes.
 
-Non-technical users have products such as Google Forms, but developers frequently need more control over presentation, APIs, integrations, and self-hosting.
+## 4. Authentication
 
-OpenForms provides both:
+### Email registration
 
-**No-code users**
+Input: name, email and password only. Name: 2–100 characters; email normalized by trim/lowercase and unique; password:
+12–128 characters. Do not apply provider-specific email dot/plus rewriting.
 
-Create forms visually.
+Create user and hashed verification-token record in a transaction. Send verification email after commit. Email failure
+preserves the account and exposes a resend option. Verification tokens are random, single-use and expire after 24 hours.
 
-**Developers**
+Unverified users can sign in, inspect their account, resend verification and log out. Form/response management requires
+verified email.
 
-Use OpenForms purely as a backend for custom forms.
+Hash passwords with Argon2id and configure cost for deployment capacity. Login failures use a generic message and rate
+limiting.
 
----
+### Google login
 
-# 3. Product Goals
+Use Passport Google OAuth with minimal identity scopes and validated browser-bound state. Resolve an identity using
+provider subject. A provider-verified email may verify a newly created account.
 
-The MVP must allow a user to:
+If the Google email matches an existing password account without a linked identity, ask the user to use their existing
+sign-in method. Do not silently merge accounts by email. Explicit linking is deferred.
 
-1. Create an account.
-2. Create a form.
-3. Add and configure fields.
-4. Preview the form.
-5. Publish the form.
-6. Share a public URL.
-7. Receive submissions.
-8. View responses.
-9. Export responses.
-10. Embed the form.
-11. Submit responses using an API.
-12. Receive email notifications.
-13. Configure webhooks.
+After Google login, go directly to My Forms. Do not place access/refresh tokens in redirect URLs. Complete login through
+secure cookies or a short-lived single-use exchange code and restrict redirect destinations.
 
-The project should also be easy to self-host.
+### Session and recovery
 
----
+- Passport local strategy handles password credentials; JWT strategy handles access authentication.
+- Access JWT: 15 minutes, with user ID and session ID; browser keeps it in memory.
+- Refresh session: 30 days; hash stored in database; Secure, HttpOnly refresh cookie in production.
+- Rotate refresh token on use and detect replay. Frontend serializes refresh calls; document concurrent-request
+  behavior.
+- Validate user/session active state on authenticated requests. Logout revokes the current session.
+- Protect cookie refresh/logout with Origin validation and CSRF controls matching the deployment.
+- Password-reset requests respond neutrally. Reset token is hashed, single-use and expires in 30 minutes.
+- Successful password reset revokes existing sessions. Google-only accounts do not gain a password through the reset
+  endpoint.
+- Never return password/token hashes in API serialization.
 
-# 4. Non-Goals for MVP
+## 5. My Forms and profile
 
-The MVP will NOT include:
+My Forms shows title, draft/published state, response count and updated time. Support title search, pagination and safe
+allowlisted sorting. Default page size 20, maximum 100; default order updated descending, then ID.
 
-- AI form generation
-- payments
-- complex conditional logic
-- workflow automation
-- team collaboration
-- enterprise SSO
-- advanced analytics
-- custom domains
-- marketplace/plugins
-- native mobile apps
-- Kafka
-- microservices
-- Kubernetes
+Actions: create, edit, preview, publish/unpublish, responses and delete. Deletion confirmation explains that responses
+will also be deleted.
 
-These can be considered later.
+Profile supports current account retrieval and display-name update. Email changes and account deletion are deferred to
+avoid expanding identity workflows.
 
----
+## 6. Builder
 
-# 5. User Types
+Desktop layout: field palette, canvas and selected-field settings. On mobile, use drawers. Operations:
+add/edit/delete/duplicate fields, reorder, change labels/help text/placeholders, mark required and configure
+validation/options.
 
-## 5.1 Form Owner
+Field and option IDs are stable. Label changes do not change IDs; duplicating a field creates new IDs. Drag-and-drop has
+keyboard reorder alternatives.
 
-Authenticated user who creates and manages forms.
+| Type              | Answer           | Validation/configuration                             |
+|-------------------|------------------|------------------------------------------------------|
+| `text`            | String           | Required, min/max length                             |
+| `textarea`        | String           | Required, min/max length                             |
+| `email`           | String           | Required, valid email, max length                    |
+| `multiple_choice` | Option ID string | Required, one defined option                         |
+| `checkbox`        | Option ID array  | Required, unique defined options, min/max selections |
 
-Can:
+Limits: 50 fields/form, 50 options/choice field, labels 200 characters, help text 1,000 characters, text answers 10,000
+characters; schema and submission body each at most 256 KiB. Enforce limits server-side.
 
-- create forms
-- edit forms
-- publish forms
-- view responses
-- delete responses
-- export data
-- configure integrations
-- generate API keys
+Autosave after approximately 800 ms of inactivity. Show Saving, Saved and Unsaved/Retry. Include expectedDraftRevision;
+stale writes return 409 rather than overwrite edits from another tab. Preview uses the public renderer with the draft
+and never stores responses.
 
----
+## 7. Schema and publication
 
-## 5.2 Respondent
-
-Person filling a published form.
-
-Does not require an account.
-
-Can:
-
-- view form
-- submit form
-- upload files when enabled
-- see submission confirmation
-
----
-
-## 5.3 Developer
-
-Uses OpenForms as infrastructure.
-
-Can:
-
-- submit responses using API
-- embed forms
-- use API keys
-- configure webhooks
-- integrate OpenForms into another application
-
----
-
-# 6. Authentication
-
-Support:
-
-- Email/password registration
-- Login
-- Refresh token
-- Logout
-- Email verification
-- Forgot password
-- Reset password
-
-JWT access tokens should be short-lived.
-
-Refresh sessions should be revocable.
-
-Passwords must be securely hashed.
-
----
-
-# 7. Dashboard
-
-After login, user lands on:
-
-```text
-/forms
-```
-
-Dashboard displays:
-
-```text
-My Forms
-
-Customer Feedback
-32 responses
-Published
-Updated 2 hours ago
-
-Contact Form
-18 responses
-Published
-
-Employee Survey
-0 responses
-Draft
-```
-
-Each card should show:
-
-- form title
-- status
-- number of responses
-- created date
-- last updated
-- actions menu
-
-Actions:
-
-- Edit
-- Preview
-- Responses
-- Duplicate
-- Publish/unpublish
-- Delete
-
-Dashboard should support basic search.
-
----
-
-# 8. Form Lifecycle
-
-Forms have the following statuses:
-
-```text
-DRAFT
-PUBLISHED
-CLOSED
-```
-
-### DRAFT
-
-Editable but unavailable publicly.
-
-### PUBLISHED
-
-Publicly accessible and accepting responses.
-
-### CLOSED
-
-Public page exists but no new responses are accepted.
-
----
-
-# 9. Form Creation
-
-Endpoint:
-
-```http
-POST /api/v1/forms
-```
-
-Initial request:
+Use JSONB form schemas and JSONB answers. Do not create database columns for questions.
 
 ```json
 {
-  "title": "Customer Feedback"
-}
-```
-
-System creates:
-
-```text
-Form ID
-Owner ID
-Public slug
-Default schema
-Draft status
-Created timestamp
-Updated timestamp
-```
-
-Example slug:
-
-```text
-k7Dx92pQ
-```
-
-Public URL:
-
-```text
-/f/k7Dx92pQ
-```
-
----
-
-# 10. Form Builder
-
-The builder should contain three main areas.
-
-```text
-┌──────────────────────────────────────────────┐
-│ Customer Feedback             Preview Save  │
-├──────────────┬──────────────────┬────────────┤
-│              │                  │            │
-│ Field Types  │ Form Canvas      │ Settings   │
-│              │                  │            │
-│ Text         │ Name             │ Required   │
-│ Email        │ [__________]     │ Label      │
-│ Choice       │                  │ Help text  │
-│ Date         │ Rating           │ etc.       │
-│              │ ★★★★★            │            │
-└──────────────┴──────────────────┴────────────┘
-```
-
-The exact layout can be simplified for MVP.
-
----
-
-# 11. Supported Fields
-
-MVP should support:
-
-### Short Text
-
-Single-line text input.
-
-Options:
-
-- label
-- placeholder
-- required
-- minimum length
-- maximum length
-
----
-
-### Long Text
-
-Textarea.
-
-Options:
-
-- label
-- placeholder
-- required
-- minimum length
-- maximum length
-
----
-
-### Email
-
-Email input with validation.
-
----
-
-### Number
-
-Numeric input.
-
-Options:
-
-- minimum
-- maximum
-- required
-
----
-
-### Multiple Choice
-
-User selects one option.
-
----
-
-### Checkbox
-
-User selects multiple options.
-
----
-
-### Dropdown
-
-Select one option from a dropdown.
-
----
-
-### Date
-
-Date input.
-
----
-
-### Rating
-
-Example:
-
-```text
-How was your experience?
-
-★ ★ ★ ★ ★
-```
-
-Configurable maximum:
-
-```text
-5
-10
-```
-
----
-
-# 12. Form Schema
-
-Store form structure as JSONB.
-
-Example:
-
-```json
-{
-  "version": 1,
+  "schemaVersion": 1,
   "fields": [
     {
       "id": "fld_name",
       "type": "text",
       "label": "Your name",
-      "placeholder": "Enter your name",
       "required": true,
       "validation": {
         "minLength": 2,
         "maxLength": 100
       }
-    },
-    {
-      "id": "fld_email",
-      "type": "email",
-      "label": "Email",
-      "required": true
-    },
-    {
-      "id": "fld_rating",
-      "type": "rating",
-      "label": "Rate your experience",
-      "required": true,
-      "validation": {
-        "min": 1,
-        "max": 5
-      }
     }
   ]
 }
 ```
 
-Each field receives an immutable UUID/unique identifier.
+Forms have `draft` or `published` state. New forms have a globally unique opaque public slug, draft schema and revision
+counter. Public URL: `/f/:slug`.
 
-Changing the label should not change the field ID.
+Keep draft schema/settings and one published snapshot on the form. Publishing validates and snapshots title,
+description, fields, submit text and success message, then increments publicationVersion. Draft changes do not affect
+the public form until Publish Changes. Unpublish disables public access immediately.
 
----
+Each response stores the snapshot used to validate it, preserving old labels/options after republishing. No
+revision-history table or UI is required.
 
-# 13. Builder Operations
+Publication requires title, at least one field, unique IDs, valid constraints and nonempty valid choices. Redirect URLs,
+scheduled closing and response limits are deferred.
 
-Users must be able to:
+## 8. Public forms and submissions
 
-- add field
-- edit field
-- delete field
-- duplicate field
-- reorder fields
-- mark required
-- edit labels
-- edit placeholders
-- configure validation
-- configure options
-
-Drag-and-drop can be implemented using dnd-kit.
-
----
-
-# 14. Form Settings
-
-Each form supports:
-
-```text
-Title
-Description
-Status
-Submit button text
-Success message
-Redirect URL
-Accept responses
-Response limit
-Closing date
-Email notification
-```
-
-Example:
+Respondents need no account. Public GET returns the safe published snapshot and publicationVersion. Unknown, unpublished
+or deleted forms return generic not found. Do not return owner email, sessions or response data.
 
 ```json
 {
-  "submitButtonText": "Send feedback",
-  "successMessage": "Thanks for your feedback!",
-  "redirectUrl": null
-}
-```
-
----
-
-# 15. Preview
-
-Owner can preview the form before publishing.
-
-Preview should render using the exact same renderer used by the public form.
-
-This avoids maintaining separate builder and production rendering implementations.
-
----
-
-# 16. Publishing
-
-Endpoint:
-
-```http
-POST /api/v1/forms/:id/publish
-```
-
-Publishing performs validation.
-
-For example:
-
-- title must exist
-- form must contain at least one field
-- every field must have a label
-- choice fields must contain valid options
-
-Once successful:
-
-```text
-DRAFT → PUBLISHED
-```
-
----
-
-# 17. Public Form
-
-Public endpoint:
-
-```http
-GET /api/v1/public/forms/:slug
-```
-
-No authentication required.
-
-Returns only information required for rendering the form.
-
-Sensitive configuration must never be exposed.
-
----
-
-# 18. Public Submission
-
-Endpoint:
-
-```http
-POST /api/v1/public/forms/:slug/submissions
-```
-
-Example:
-
-```json
-{
+  "publicationVersion": 1,
   "answers": {
-    "fld_name": "John Doe",
-    "fld_email": "john@example.com",
-    "fld_rating": 5
-  }
+    "fld_name": "Rohit"
+  },
+  "honeypot": ""
 }
 ```
 
-The backend MUST NOT trust frontend validation.
+Server checks publication state and validates every answer against the current snapshot. Reject unknown field IDs, wrong
+JSON types, whitespace-only required strings, invalid email, invalid choice IDs, duplicate checkbox options and exceeded
+bounds. Missing/null optional answers are absent; required null is invalid.
+
+Stale publicationVersion returns 409 `FORM_CHANGED`; client preserves input and prompts reload/review. Invalid answers
+return 422 with field-level errors. Success returns 201 with response ID, timestamp and success message, granting no
+private read access.
+
+Use a transaction and form row lock, or equivalent ordering, so publication/unpublish/delete cannot race response
+acceptance. Store the exact validated snapshot with the response.
+
+Support optional Idempotency-Key scoped to form for 24 hours. Store key/payload hash and original response result: same
+key/payload returns previous success; changed payload returns 409. Client retries reuse the key. Unpublished/deleted
+forms remain unavailable even when retrying a prior key.
+
+Apply payload limits, honeypot and initial rate limit of ten submissions/minute/IP/form plus configurable form-wide
+abuse ceiling. A single API instance may use an in-memory limiter; shared limiting is required before horizontal
+scaling. Configure trusted reverse proxy IP handling. Honeypot matches produce no stored response and a generic
+success-like reply. CORS is not spam protection.
+
+## 9. Response management and export
+
+Owner lists responses with pagination, submitted-time ordering and UTC date filters. Detail uses the stored snapshot for
+human-readable labels/options. Response count is retained submissions, so deletion decreases it.
+
+Owner may delete one response after confirmation. Form deletion removes all associated responses/idempotency records
+transactionally for this bounded MVP.
+
+CSV export uses owner/form/date scope, streams output and caps at 10,000 responses. Above that limit return an
+actionable error. Include response ID, submitted-at UTC and a union of stable field IDs across snapshots; use readable
+labels plus short ID suffixes for duplicate labels. Translate option IDs using each response snapshot. Escape
+quotes/newlines/delimiters and neutralize spreadsheet formula injection. Empty exports include headers.
+
+Full respondent IP/user-agent storage is disabled by default. No submission emails or external deliveries exist in this
+release.
+
+## 10. Database model
+
+UUID IDs, UTC timestamptz, snake_case columns; enum values lower_snake_case.
+
+| Entity/table                                       | Main fields                                                                                                                                                                           |
+|----------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `User` / `users`                                   | id, name, normalized_email unique, password_hash nullable, email_verified_at, status, created_at, updated_at                                                                          |
+| `AuthIdentity` / `auth_identities`                 | id, user_id FK, provider, provider_subject; unique(provider, provider_subject)                                                                                                        |
+| `Session` / `sessions`                             | id, user_id FK, refresh_token_hash, family/replay evidence, expires_at, revoked_at, timestamps                                                                                        |
+| `AuthToken` / `auth_tokens`                        | id, user_id FK, purpose, token_hash, expires_at, consumed_at                                                                                                                          |
+| `Form` / `forms`                                   | id, user_id FK, title, description, slug unique, status, draft_schema JSONB, draft_settings JSONB, draft_revision, published_snapshot JSONB nullable, publication_version, timestamps |
+| `Submission` / `submissions`                       | id, form_id FK, answers JSONB, schema_snapshot JSONB, publication_version, created_at                                                                                                 |
+| `SubmissionIdempotency` / `submission_idempotency` | id, form_id FK, key_hash, payload_hash, submission_id FK, expires_at                                                                                                                  |
+
+Use Submission as the backend entity name; UI may say Responses. These are the same data, not separate
+submission/response tables.
+
+Index forms `(user_id, updated_at, id)` and submissions `(form_id, created_at, id)`. Enforce unique
+`(form_id, key_hash)`. Use form-qualified foreign keys for idempotency-to-submission references so records cannot point
+to another form's submission. Explicitly configure deletion behavior. Production uses migrations, not automatic schema
+synchronization.
+
+## 11. DTO contract
+
+| DTO                   | Input                                                             |
+|-----------------------|-------------------------------------------------------------------|
+| `RegisterDto`         | name, email, password                                             |
+| `LoginDto`            | email, password                                                   |
+| `VerifyEmailDto`      | token                                                             |
+| `ForgotPasswordDto`   | email                                                             |
+| `ResetPasswordDto`    | token, password                                                   |
+| `UpdateUserDto`       | name                                                              |
+| `CreateFormDto`       | title, optional description                                       |
+| `UpdateFormDto`       | expectedDraftRevision, optional title/description/schema/settings |
+| `PublishFormDto`      | expectedDraftRevision                                             |
+| `CreateSubmissionDto` | publicationVersion, answers, optional honeypot                    |
+| `FormQueryDto`        | page, limit, search, allowed sort/order                           |
+| `SubmissionQueryDto`  | page, limit, from, to, allowed sort/order                         |
+
+Nested field DTOs are discriminated by field type and validate configuration. Dynamic answers are validated by a
+schema-driven server service; validating only that answers is an object is insufficient.
+
+DTOs whitelist accepted properties and reject unexpected fields. Derive userId from authentication. Tokens and
+Idempotency-Key are never logged. API response DTOs omit all secrets.
+
+## 12. API catalogue — 25 product endpoints + 2 health routes
+
+All paths are under `/api/v1`. Count each HTTP method separately. Product count includes Google callbacks; health routes
+are counted separately.
+
+### Authentication — 10
+
+| Method | Path                        | Purpose                 |
+|--------|-----------------------------|-------------------------|
+| POST   | `/auth/register`            | Create personal account |
+| POST   | `/auth/login`               | Email/password login    |
+| GET    | `/auth/google`              | Start Google OAuth      |
+| GET    | `/auth/google/callback`     | Complete Google OAuth   |
+| POST   | `/auth/refresh`             | Rotate refresh token    |
+| POST   | `/auth/logout`              | Revoke current session  |
+| POST   | `/auth/verify-email`        | Verify email token      |
+| POST   | `/auth/resend-verification` | Resend verification     |
+| POST   | `/auth/forgot-password`     | Request password reset  |
+| POST   | `/auth/reset-password`      | Consume reset token     |
+
+### User — 2
 
-Backend loads the current form schema and dynamically validates every answer.
+| Method | Path        | Purpose             |
+|--------|-------------|---------------------|
+| GET    | `/users/me` | Current profile     |
+| PATCH  | `/users/me` | Update display name |
 
----
+### Private forms — 7
 
-# 19. Dynamic Validation
+| Method | Path                       | Purpose                           |
+|--------|----------------------------|-----------------------------------|
+| POST   | `/forms`                   | Create owned form                 |
+| GET    | `/forms`                   | List/search own forms             |
+| GET    | `/forms/:formId`           | Read owned draft/settings         |
+| PATCH  | `/forms/:formId`           | Save draft with concurrency check |
+| DELETE | `/forms/:formId`           | Delete own form and submissions   |
+| POST   | `/forms/:formId/publish`   | Publish/republish saved draft     |
+| POST   | `/forms/:formId/unpublish` | Disable public access             |
 
-Submission validation includes:
+### Private submissions — 4
 
-- required fields
-- valid field IDs
-- text length
-- email format
-- number ranges
-- allowed options
-- checkbox values
-- date format
-- rating range
+| Method | Path                                       | Purpose                |
+|--------|--------------------------------------------|------------------------|
+| GET    | `/forms/:formId/submissions`               | List owner's responses |
+| GET    | `/forms/:formId/submissions/export`        | Export CSV             |
+| GET    | `/forms/:formId/submissions/:submissionId` | Read response          |
+| DELETE | `/forms/:formId/submissions/:submissionId` | Delete response        |
 
-Example invalid response:
+### Public — 2
 
-```json
-{
-  "statusCode": 400,
-  "errors": [
-    {
-      "fieldId": "fld_email",
-      "message": "Invalid email address"
-    }
-  ]
-}
-```
+| Method | Path                              | Purpose                        |
+|--------|-----------------------------------|--------------------------------|
+| GET    | `/public/forms/:slug`             | Published renderer data        |
+| POST   | `/public/forms/:slug/submissions` | Anonymous validated submission |
 
-Unknown fields should be rejected or ignored according to a clearly defined global policy. For MVP, reject them.
+### Health — 2 additional operational routes
 
----
+| Method | Path            | Purpose            |
+|--------|-----------------|--------------------|
+| GET    | `/health/live`  | Process liveness   |
+| GET    | `/health/ready` | Database readiness |
 
-# 20. Submission Processing
+Total: **25 product endpoints + 2 health endpoints = 27**. Preview is frontend-only; there is no preview submission API.
+Register export before dynamic submission-detail routes.
 
-Submission flow:
+Standard errors include statusCode, code, message, requestId and optional field errors. Use 401 invalid authentication,
+403 unverified account, 404 unavailable private/public resource, 409 stale version/idempotency conflict, 413 oversized
+body, 422 invalid answers and 429 rate limit. List responses include items and page/limit/total metadata. Document all
+routes in Swagger/OpenAPI.
 
-```text
-POST submission
-       ↓
-Rate limit
-       ↓
-Load published form
-       ↓
-Check accepting responses
-       ↓
-Validate answers
-       ↓
-Store response
-       ↓
-Return success
-       ↓
-Queue background jobs
-       │
-       ├── Email
-       └── Webhooks
-```
+## 13. Architecture and frontend
 
-Saving the submission must not depend on successful email or webhook delivery.
+NestJS modules: Auth, Users, Forms, Submissions, Mail and Health. Common utilities cover exception handling, pagination
+and authentication decorators. Keep a modular monolith with explicit user IDs passed to ownership-scoped services. No
+TenantContext, membership guard, RBAC guard, workers or queue.
 
----
+Suggested guard flow: JWT/session validation → verified-email check → ownership-scoped service. Public marker exempts
+authentication only, not validation or abuse controls.
 
-# 21. Responses
+Frontend: Next.js, TypeScript, Tailwind, shadcn/ui, Lucide, TanStack Query, Axios, React Hook Form, Zod, dnd-kit,
+date-fns and pnpm. Zustand optional for selected-field state; server data remains in TanStack Query.
 
-Owner endpoint:
+Routes: `/login`, `/register`, `/verify-email`, `/forgot-password`, `/reset-password`, `/account`, `/forms`,
+`/forms/new`, `/forms/:id/edit`, `/forms/:id/preview`, `/forms/:id/responses`, `/forms/:id/responses/:submissionId` and
+`/f/:slug`.
 
-```http
-GET /api/v1/forms/:id/responses
-```
+Do not share authenticated caches between users. Clearing account state on logout is mandatory. Server validation
+remains independent from frontend validation.
 
-Supports:
+## 14. UX, security and deployment
 
-```text
-page
-limit
-sort
-from
-to
-```
+Provide clear empty states, loading states, inline errors, autosave status and safe deletion confirmation. Public forms
+work on phones and with keyboard/screen readers. Labels, visible focus, contrast and accessible error announcements are
+required. Preview and public rendering use the same component. Light/dark dashboard themes are optional polish.
 
-Example:
+HTTPS, security headers, restrictive CORS, secure cookies, CSRF checks, DTO whitelists, parameterized SQL, hashing and
+ownership checks are required. Render labels/descriptions as text. Never log credentials, answer bodies or OAuth codes.
+Basic scrubbed structured logs and optional Sentry suffice; no audit database/UI is required.
 
-```http
-GET /api/v1/forms/123/responses?page=1&limit=20
-```
+Deploy one NestJS API, PostgreSQL and Next.js frontend. Docker Compose supports local development. Email/Google
+credentials are environment settings; commit placeholders only. Document backups, restore and deployment migrations. CI
+runs lint, typecheck, meaningful tests and builds. README includes screenshots, demo, setup and ownership/security
+model.
 
----
+## 15. Tests and delivery
 
-# 22. Response Table
+Required tests:
 
-UI should dynamically construct columns based on form fields.
+- Register/verify/reset tokens are single-use, expire and handle delivery failure through resend.
+- OAuth state mismatch fails; existing-email accounts are not silently merged.
+- Refresh rotation, reset and logout invalidate appropriate sessions.
+- User A cannot list/read/update/delete/export user B's forms or submissions, including mixed parent/child IDs.
+- Creation cannot override user ownership through a DTO.
+- All five field types reject wrong types, unknown fields/options and invalid required answers.
+- Draft edits do not affect published rendering; stale saves/public versions conflict.
+- Historical snapshots render correctly after republishing.
+- Concurrent submission retries store once; unpublish/delete races do not accept afterward.
+- CSV escaping/formula protection and ownership checks pass.
+- Logs omit secrets and submitted answers.
 
-Example:
+Implementation order:
 
-| Submitted | Name | Email | Rating |
-|---|---|---|---:|
-| Oct 7 | John | john@example.com | 5 |
-| Oct 7 | Sarah | sarah@example.com | 4 |
+1. Auth and users, with ownership-scoped form skeleton.
+2. Builder, JSONB schemas, autosave and preview.
+3. Publication, anonymous submission and response dashboard.
+4. CSV, deletion, accessibility, tests and deployment.
 
-Clicking a row opens the complete response.
-
----
-
-# 23. Individual Response
-
-Endpoint:
-
-```http
-GET /api/v1/forms/:formId/responses/:responseId
-```
-
-Display:
-
-```text
-Customer Feedback
-
-Submitted
-7 October 2026 4:32 PM
-
-Name
-John Doe
-
-Email
-john@example.com
-
-Rating
-★★★★★
-```
-
----
-
-# 24. Delete Response
-
-Endpoint:
-
-```http
-DELETE /api/v1/forms/:formId/responses/:responseId
-```
-
-Only the form owner can perform this action.
-
----
-
-# 25. CSV Export
-
-Endpoint:
-
-```http
-GET /api/v1/forms/:id/responses/export
-```
-
-Example output:
-
-```csv
-submitted_at,name,email,rating
-2026-10-07T11:02:00Z,John Doe,john@example.com,5
-```
-
-Export should use field labels as human-readable column names while internally mapping them using field IDs.
-
----
-
-# 26. Embedding
-
-Users can embed a published form.
-
-Simplest MVP implementation:
-
-```html
-<iframe
-  src="https://openforms.example/f/k7Dx92pQ"
-  width="100%"
-  height="600">
-</iframe>
-```
-
-Dashboard should provide:
-
-```text
-Embed
-
-[Copy code]
-```
-
-A JavaScript embed SDK can be introduced later.
-
----
-
-# 27. Developer Submission API
-
-Developers should be able to use their own UI.
-
-Example:
-
-```http
-POST /api/v1/forms/:formId/submissions
-Authorization: Bearer frm_live_xxxxx
-Content-Type: application/json
-```
-
-```json
-{
-  "answers": {
-    "fld_name": "John",
-    "fld_email": "john@example.com"
-  }
-}
-```
-
-The same validation engine used by public forms should validate API submissions.
-
----
-
-# 28. API Keys
-
-User can generate API keys.
-
-Endpoints:
-
-```text
-POST   /api/v1/api-keys
-GET    /api/v1/api-keys
-DELETE /api/v1/api-keys/:id
-```
-
-Example generated key:
-
-```text
-frm_live_7hD92ks...
-```
-
-Only show the complete key once.
-
-Store only a secure hash of the key.
-
-Database compromise should not reveal usable API keys.
-
----
-
-# 29. Webhooks
-
-Form owner can configure webhook endpoints.
-
-Example:
-
-```text
-https://example.com/webhooks/forms
-```
-
-When a response is created, send:
-
-```http
-POST /webhooks/forms
-```
-
-```json
-{
-  "event": "form.submitted",
-  "formId": "form_123",
-  "submissionId": "sub_123",
-  "createdAt": "2026-10-07T11:02:00Z",
-  "data": {
-    "fld_name": "John",
-    "fld_email": "john@example.com"
-  }
-}
-```
-
----
-
-# 30. Webhook Security
-
-Each webhook has a secret.
-
-Payload should be signed using HMAC-SHA256.
-
-Example header:
-
-```text
-X-OpenForms-Signature
-```
-
-Consumer can verify that the request genuinely came from OpenForms.
-
----
-
-# 31. Webhook Delivery
-
-Do not make webhook calls synchronously during form submission.
-
-Use a background queue.
-
-```text
-Submission
-    ↓
-Database
-    ↓
-BullMQ
-    ↓
-Webhook Worker
-    ↓
-Customer Endpoint
-```
-
-Retry failed deliveries.
-
-Suggested retry policy:
-
-```text
-Attempt 1 → immediately
-Attempt 2 → 1 minute
-Attempt 3 → 5 minutes
-Attempt 4 → 30 minutes
-Attempt 5 → 2 hours
-```
-
-After maximum attempts, mark the delivery failed.
-
----
-
-# 32. Email Notifications
-
-Owner can enable:
-
-```text
-Notify me when someone submits this form
-```
-
-Email:
-
-```text
-New response: Customer Feedback
-
-You received a new response.
-
-Name: John Doe
-Email: john@example.com
-Rating: 5
-
-View response →
-```
-
-Email processing should also use the background queue.
-
----
-
-# 33. File Uploads
-
-File upload can be V1.1 rather than initial MVP.
-
-Field:
-
-```text
-FILE
-```
-
-Files should be uploaded directly to object storage using signed URLs where practical.
-
-Use Cloudflare R2 or another S3-compatible provider.
-
-Store file metadata rather than binary files in PostgreSQL.
-
----
-
-# 34. Spam Protection
-
-Public submission endpoints require protection.
-
-MVP:
-
-- IP-based rate limiting
-- form-based rate limiting
-- payload size limit
-- honeypot field
-- server-side validation
-
-Later:
-
-- CAPTCHA/Turnstile
-- duplicate detection
-- bot scoring
-
----
-
-# 35. Rate Limiting
-
-Examples:
-
-Public submissions:
-
-```text
-10 submissions / minute / IP / form
-```
-
-Developer API:
-
-```text
-100 requests / minute / API key
-```
-
-Values should eventually be configurable.
-
----
-
-# 36. Database Model
-
-## users
-
-```text
-id UUID PK
-email VARCHAR UNIQUE
-password_hash VARCHAR
-email_verified_at TIMESTAMP NULL
-created_at
-updated_at
-```
-
-## forms
-
-```text
-id UUID PK
-owner_id UUID FK
-title VARCHAR
-description TEXT
-slug VARCHAR UNIQUE
-status ENUM
-schema JSONB
-settings JSONB
-published_at TIMESTAMP NULL
-created_at
-updated_at
-```
-
-## form_responses
-
-```text
-id UUID PK
-form_id UUID FK
-answers JSONB
-source ENUM
-submitted_at
-```
-
-Possible source values:
-
-```text
-PUBLIC
-API
-EMBED
-```
-
-## api_keys
-
-```text
-id UUID PK
-user_id UUID FK
-name VARCHAR
-key_prefix VARCHAR
-key_hash VARCHAR
-last_used_at TIMESTAMP
-created_at
-revoked_at TIMESTAMP NULL
-```
-
-## webhooks
-
-```text
-id UUID PK
-form_id UUID FK
-url VARCHAR
-secret_encrypted VARCHAR
-enabled BOOLEAN
-created_at
-updated_at
-```
-
-## webhook_deliveries
-
-```text
-id UUID PK
-webhook_id UUID FK
-response_id UUID FK
-status ENUM
-attempt_count INTEGER
-last_status_code INTEGER
-next_attempt_at TIMESTAMP
-created_at
-updated_at
-```
-
-## sessions
-
-```text
-id UUID PK
-user_id UUID FK
-refresh_token_hash VARCHAR
-expires_at
-revoked_at
-created_at
-```
-
----
-
-# 37. Backend Modules
-
-NestJS structure:
-
-```text
-src/
-├── auth/
-├── users/
-├── forms/
-├── submissions/
-├── responses/
-├── api-keys/
-├── webhooks/
-├── notifications/
-├── queue/
-├── storage/
-├── mail/
-└── common/
-```
-
-Keep this as a modular monolith.
-
-Do not create microservices for the MVP.
-
----
-
-# 38. Frontend Structure
-
-Suggested routes:
-
-```text
-/
- /login
- /register
-
-/dashboard
-/forms
-/forms/new
-/forms/:id
-/forms/:id/edit
-/forms/:id/responses
-/forms/:id/responses/:responseId
-/forms/:id/settings
-/forms/:id/integrations
-
-/f/:slug
-```
-
-The `/f/:slug` route is public.
-
----
-
-# 39. Main APIs
-
-## Authentication
-
-```text
-POST /api/v1/auth/register
-POST /api/v1/auth/login
-POST /api/v1/auth/refresh
-POST /api/v1/auth/logout
-POST /api/v1/auth/verify-email
-POST /api/v1/auth/forgot-password
-POST /api/v1/auth/reset-password
-```
-
-## Forms
-
-```text
-POST   /api/v1/forms
-GET    /api/v1/forms
-GET    /api/v1/forms/:id
-PATCH  /api/v1/forms/:id
-DELETE /api/v1/forms/:id
-
-POST /api/v1/forms/:id/publish
-POST /api/v1/forms/:id/unpublish
-POST /api/v1/forms/:id/close
-POST /api/v1/forms/:id/duplicate
-```
-
-## Public
-
-```text
-GET  /api/v1/public/forms/:slug
-POST /api/v1/public/forms/:slug/submissions
-```
-
-## Responses
-
-```text
-GET    /api/v1/forms/:id/responses
-GET    /api/v1/forms/:id/responses/:responseId
-DELETE /api/v1/forms/:id/responses/:responseId
-
-GET /api/v1/forms/:id/responses/export
-```
-
-## API Keys
-
-```text
-POST   /api/v1/api-keys
-GET    /api/v1/api-keys
-DELETE /api/v1/api-keys/:id
-```
-
-## Developer API
-
-```text
-POST /api/v1/forms/:id/submissions
-```
-
-Authenticated using API key.
-
-## Webhooks
-
-```text
-POST   /api/v1/forms/:id/webhooks
-GET    /api/v1/forms/:id/webhooks
-PATCH  /api/v1/forms/:id/webhooks/:webhookId
-DELETE /api/v1/forms/:id/webhooks/:webhookId
-
-GET /api/v1/forms/:id/webhooks/:webhookId/deliveries
-```
-
----
-
-# 40. Authorization
-
-Every private form operation must verify ownership.
-
-A user must never be able to access another user's form by changing the UUID.
-
-For example:
-
-```text
-User A
-   ↓
-GET /forms/form-owned-by-B
-   ↓
-404
-```
-
-Prefer `404` rather than exposing whether another user's resource exists.
-
----
-
-# 41. Security Requirements
-
-Minimum security requirements:
-
-- Argon2/bcrypt password hashing
-- hashed refresh tokens
-- hashed API keys
-- secure HTTP-only refresh cookie
-- CORS configuration
-- Helmet/security headers
-- request size limits
-- rate limiting
-- DTO validation
-- dynamic submission validation
-- authorization on every private resource
-- webhook HMAC signatures
-- encrypted sensitive webhook secrets
-- safe file upload validation
-- SQL injection protection through ORM/query parameters
-
-Never log:
-
-- passwords
-- access tokens
-- refresh tokens
-- complete API keys
-
----
-
-# 42. Observability
-
-MVP should have:
-
-- structured application logs
-- request IDs
-- error tracking
-- health endpoint
-
-Example:
-
-```text
-GET /health
-```
-
-Response:
-
-```json
-{
-  "status": "ok",
-  "database": "up"
-}
-```
-
-Sentry can be used for error tracking.
-
-Prometheus/Grafana are unnecessary for the first version.
-
----
-
-# 43. Technology Stack
-
-## Frontend
-
-```text
-Next.js
-TypeScript
-Tailwind CSS
-shadcn/ui
-React Hook Form
-Zod
-dnd-kit
-TanStack Query
-Axios
-```
-
-## Backend
-
-```text
-NestJS
-TypeScript
-TypeORM
-PostgreSQL
-Swagger/OpenAPI
-```
-
-## Async Processing
-
-```text
-Redis
-BullMQ
-```
-
-## Storage
-
-```text
-Cloudflare R2
-```
-
-## Email
-
-```text
-Resend
-```
-
-## Infrastructure
-
-```text
-Docker
-Docker Compose
-GitHub Actions
-```
-
-## Monitoring
-
-```text
-Sentry
-```
-
----
-
-# 44. Docker Development Environment
-
-A contributor should be able to run:
-
-```bash
-docker compose up -d
-```
-
-and get:
-
-```text
-PostgreSQL
-Redis
-```
-
-Application development can then run locally.
-
-The repository should include:
-
-```text
-.env.example
-docker-compose.yml
-README.md
-```
-
----
-
-# 45. API Documentation
-
-NestJS Swagger should expose:
-
-```text
-/api/docs
-```
-
-Documentation should explain:
-
-- authentication
-- API keys
-- form APIs
-- submission APIs
-- webhook payloads
-- error responses
-
----
-
-# 46. Testing
-
-Priority backend tests:
-
-### Unit
-
-- form schema validation
-- submission validation
-- webhook signature generation
-- API key hashing/verification
-
-### Integration
-
-- create form
-- publish form
-- submit response
-- invalid submission
-- private form access
-- response retrieval
-
-### E2E Critical Flow
-
-```text
-Register
-   ↓
-Create form
-   ↓
-Add fields
-   ↓
-Publish
-   ↓
-Public fetch
-   ↓
-Submit
-   ↓
-Owner views response
-```
-
-This flow should always be covered.
-
----
-
-# 47. CI
-
-GitHub Actions pipeline:
-
-```text
-Pull Request
-     ↓
-Install
-     ↓
-Lint
-     ↓
-Type Check
-     ↓
-Unit Tests
-     ↓
-Integration Tests
-     ↓
-Build
-     ↓
-PASS
-```
-
-Merges should require CI success.
-
----
-
-# 48. UX Requirements
-
-Creating the first form should be extremely fast.
-
-Target:
-
-```text
-Register → published form
-< 2 minutes
-```
-
-The builder should autosave.
-
-Users should not have to manually press Save repeatedly.
-
-Display:
-
-```text
-Saving...
-```
-
-then:
-
-```text
-Saved ✓
-```
-
-Use debouncing rather than sending a request for every keystroke.
-
----
-
-# 49. Empty States
-
-Do not leave dashboards blank.
-
-Example:
-
-```text
-You haven't created a form yet.
-
-Create a form and start collecting responses.
-
-[ Create your first form ]
-```
-
-Responses:
-
-```text
-No responses yet.
-
-Share your form to start collecting responses.
-
-https://openforms.example/f/abc123
-
-[ Copy link ]
-```
-
----
-
-# 50. Error States
-
-Public forms should gracefully handle:
-
-### Form doesn't exist
-
-```text
-Form not found.
-```
-
-### Form closed
-
-```text
-This form is no longer accepting responses.
-```
-
-### Submission failure
-
-```text
-We couldn't submit your response.
-Please try again.
-```
-
-Never expose internal stack traces.
-
----
-
-# 51. MVP Analytics
-
-Keep analytics extremely simple.
-
-Form dashboard:
-
-```text
-Responses        142
-
-Today             12
-
-Last 7 days       54
-```
-
-Do not build advanced charts initially.
-
----
-
-# 52. README
-
-GitHub README should immediately explain the project.
-
-Example:
-
-```text
-OpenForms
-
-Open-source form builder and form backend.
-
-Build forms visually, embed them anywhere, collect
-submissions, trigger webhooks, and integrate using APIs.
-```
-
-Include:
-
-- screenshots
-- live demo
-- features
-- architecture
-- quick start
-- Docker setup
-- API example
-- webhook example
-- contributing guide
-- license
-
----
-
-# 53. Recommended Repository Structure
-
-A monorepo works well:
-
-```text
-openforms/
-│
-├── apps/
-│   ├── web/
-│   └── api/
-│
-├── packages/
-│   ├── types/
-│   └── validation/
-│
-├── docker-compose.yml
-├── README.md
-└── package.json
-```
-
-Use pnpm workspaces.
-
----
-
-# 54. Development Phases
-
-## Phase 1 — Core
-
-Build:
-
-```text
-Auth
-Forms CRUD
-JSONB schema
-Builder
-Preview
-Publish
-Public rendering
-Submission
-Responses
-```
-
-At this point the application is usable.
-
----
-
-## Phase 2 — Product Quality
-
-Add:
-
-```text
-CSV export
-Form duplication
-Autosave
-Search
-Response limits
-Closing dates
-Email notifications
-Rate limiting
-```
-
----
-
-## Phase 3 — Developer Features
-
-Add:
-
-```text
-API keys
-Developer submission API
-Webhooks
-Webhook signing
-Webhook retries
-Swagger documentation
-Embed code
-```
-
-This is where OpenForms becomes more than a Google Forms clone.
-
----
-
-## Phase 4 — Files
-
-Add:
-
-```text
-File field
-R2
-Signed uploads
-File validation
-Download authorization
-```
-
----
-
-# 55. Future Features
-
-After MVP, potential additions include:
-
-### Conditional Logic
-
-```text
-If answer = "Business"
-    show Company Name
-else
-    hide Company Name
-```
-
-### Form Themes
-
-Allow:
-
-```text
-colors
-fonts
-logo
-background
-button styling
-```
-
-### Custom Domains
-
-```text
-forms.company.com/customer-feedback
-```
-
-### Partial Responses
-
-Save unfinished submissions.
-
-### Multi-page Forms
-
-```text
-Personal Info
-     ↓
-Preferences
-     ↓
-Confirmation
-```
-
-### Teams
-
-Multiple users manage the same forms.
-
-### Workspaces
-
-```text
-Company
- ├── Marketing
- ├── HR
- └── Product
-```
-
-### Webhook Events
-
-Support:
-
-```text
-form.submitted
-form.updated
-form.closed
-```
-
-### Integration Ecosystem
-
-Possible future integrations:
-
-```text
-Slack
-Discord
-Google Sheets
-Notion
-Zapier
-CRM systems
-```
-
-### AI
-
-Only after the core product works:
-
-```text
-"Create a customer satisfaction survey for a dentist"
-
-        ↓
-
-Automatically generated form
-```
-
----
-
-# 56. MVP Success Criteria
-
-The MVP is considered complete when a new user can:
-
-```text
-Create account
-      ↓
-Create form
-      ↓
-Add questions
-      ↓
-Publish
-      ↓
-Send URL to another person
-      ↓
-Person submits response
-      ↓
-Owner sees response
-      ↓
-Owner exports responses
-```
-
-without manually interacting with the database or backend.
-
-The developer workflow must also work:
-
-```text
-Create form
-     ↓
-Generate API key
-     ↓
-POST submission from custom application
-     ↓
-Submission appears in dashboard
-     ↓
-Webhook delivered
-```
-
----
-
-# 57. Most Important Engineering Principle
-
-Do not design OpenForms around individual field types at the database level.
-
-The core abstraction should be:
-
-```text
-FORM
- │
- ├── SCHEMA
- │     ├── Field
- │     ├── Field
- │     └── Field
- │
- └── RESPONSES
-       ├── answers JSONB
-       ├── answers JSONB
-       └── answers JSONB
-```
-
-The schema defines what constitutes a valid response.
-
-This allows new field types to be introduced without database migrations for every new question type.
-
----
-
-# 58. Final MVP Scope
-
-If speed matters, the actual first release should contain only:
-
-**Authentication**
-
-Email/password authentication.
-
-**Builder**
-
-Text, textarea, email, number, multiple choice, checkbox, dropdown, date and rating.
-
-**Forms**
-
-Create, edit, duplicate, preview, publish, close and delete.
-
-**Responses**
-
-Submit, view, delete and CSV export.
-
-**Sharing**
-
-Public URL and iframe embed.
-
-**Developer**
-
-API keys and submission API.
-
-**Integration**
-
-Email notification and webhook.
-
-**Infrastructure**
-
-PostgreSQL, Redis, Docker, GitHub Actions and Sentry.
-
-Everything else should wait.
-
-The product should prioritize being **small, reliable and polished** over having a large feature list.
+The MVP is complete when both login methods and the register-to-export journey work through the UI, ownership tests pass
+and a fresh documented deployment works without manual database changes.
